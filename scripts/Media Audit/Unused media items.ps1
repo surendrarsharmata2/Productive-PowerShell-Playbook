@@ -1,0 +1,89 @@
+﻿<#
+    .SYNOPSIS
+        Lists all media items that are not linked to other items.
+    
+    .NOTES
+        Michael West
+#>
+
+$ageOptions = [ordered]@{"-- Skip --"=0;"30"=30;"90"=90;"180"=180; "365"=365}
+$sizeOptions = [ordered]@{"-- Skip --"=0;"250 KB"=250000;"500 KB"=500000;"1 MB"=1000000;"5 MB"=5000000;"10 MB"=10000000}
+
+$props = @{
+    Parameters = @(
+        @{Name="selectedAge"; Value=0; Title="Days since last updated"; Tooltip="Unused media items older than this will be returned."; Options=$ageOptions; }
+        @{Name="selectedSize"; Value=0; Title="Minimum file size"; Tooltip="Unused media items larger than this will be returned."; Options=$sizeOptions; }
+    )
+    Title = "Unused media items"
+    Icon = [regex]::Replace($PSScript.Appearance.Icon, "Office", "OfficeWhite", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    Description = "Choose an option below if you would like to filter the results."
+    Width = 450
+    Height = 300
+    ShowHints = $true
+}
+
+$result = Read-Variable @props
+
+if($result -eq "cancel"){
+    exit
+}
+
+function HasReference {
+    param(
+        $Item
+    )
+    
+    $linkDb = [Sitecore.Globals]::LinkDatabase
+    $linkDb.GetReferrerCount($Item) -gt 0
+}
+
+function Get-MediaItemWithNoReference {
+    param(
+        [int]$Age,
+        [int]$Size
+    )
+    
+    $mediaItemContainer = Get-Item "master:/media library"
+    $olderThan = [datetime]::UtcNow.AddDays(-$Age)
+    $excludedTemplates = @([Sitecore.TemplateIDs]::MediaFolder, [Sitecore.TemplateIDs]::Node)
+    $items = $mediaItemContainer.Axes.GetDescendants() | 
+        Where-Object { $excludedTemplates -notcontains $_.TemplateID } | Initialize-Item | 
+        Where-Object { ($Age -eq 0 -or $_.__Updated -lt $olderThan) -and ($Size -eq 0 -or [int]$_.Size -gt $Size) }
+    
+    foreach($item in $items) {
+        if(!(HasReference($item))) {
+            $item
+        }
+    }
+}
+
+$items = Get-MediaItemWithNoReference -Age $selectedAge -Size $selectedSize
+
+if($items.Count -eq 0) {
+    Show-Alert "There are no unused media items."
+} else {
+    $message = ""
+    if($selectedAge -gt 0) {
+        $message += " Filtered by updated date which are more than $($selectedAge) days."
+    }
+    if($selectedSize -gt 0) {
+        $message += " Filtered by file size larger than $($selectedSize) bytes."
+    }
+    $props = @{
+        InfoTitle = $PSScript.Name
+        InfoDescription = "Lists all media items that are not linked from other items.$($message)"
+        PageSize = 25
+        Title = $PSScript.Name
+    }
+    
+    $items |
+        Show-ListView @props -Property @{Label="Name"; Expression={$_.DisplayName} },
+            @{Label="Size"; Expression={$_.Size}},
+            @{Label="Extension"; Expression={$_.Extension}},
+            @{Label="Updated"; Expression={$_.__Updated} },
+            @{Label="Updated by"; Expression={$_."__Updated by"} },
+            @{Label="Created"; Expression={$_.__Created} },
+            @{Label="Created by"; Expression={$_."__Created by"} },
+            @{Label="Path"; Expression={$_.ItemPath} }
+}
+Close-Window

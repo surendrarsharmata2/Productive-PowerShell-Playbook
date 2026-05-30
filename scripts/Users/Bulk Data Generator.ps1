@@ -1,0 +1,150 @@
+﻿<#
+    .SYNOPSIS
+        Bulk generates items or users using the specified criteria.
+#>
+
+$dataTypeOptions = [ordered]@{"Item" = 1; "User" = 2 }
+$props = @{
+    Title = "Bulk Creation Tool"
+    Description = "Choose what type of data to generate."
+    OkButtonName = "Next"
+    CancelButtonName = "Quit"
+    Icon = "OfficeWhite/32x32/clock_back.png"
+    Parameters = @(
+        @{Name="Info"; Title="Warning"; Value="This tool is not intended for use on production systems."; editor="info";},
+        @{Name="selectedDataTypeValue"; Value=1; Options=$dataTypeOptions; Title="What type of data should be generated?"}
+    )
+}
+
+$result = Read-Variable @props
+if($result -ne "ok") {
+    Close-Window
+    exit
+}
+
+$dataTypeName = $dataTypeOptions.Keys | Where-Object { $dataTypeOptions[$_] -eq $selectedDataTypeValue } | Select-Object -First 1
+$defaultCount = 10
+$defaultItemNamePrefix = "Sample"
+$database = "master"
+$defaultRootItem = Get-Item -Path (@{$true="$($database):\content\home"; $false="$($database):\content"}[(Test-Path -Path "$($database):\content\home")])
+
+$defaultDomain = "sitecore"
+$domainList = (Get-Domain | Select-Object -Expand Name | ForEach-Object { $_ + "|" + $_ }) -join "|"
+
+$defaultItemTemplate = Get-Item "master:\templates\Sample\Sample Item"
+
+$props = @{
+    Title = "Bulk $($dataTypeName) Creation Tool"
+    Description = "Configure how the $($dataTypeName)s should be generated."
+    OkButtonName = "Generate"
+    CancelButtonName = "Quit"
+    Icon = "OfficeWhite/32x32/clock_back.png"
+    Width = 550
+    Height = 450
+    Parameters = @(
+        @{
+            Name="inputCount"; Value=$defaultCount; Placeholder="Enter the number of items";
+            Title="How many $($dataTypeName)s should be generated?"; Editor="number"; Columns=6;
+            Validator = {
+                if([string]::IsNullOrEmpty($variable.Value) -or -not($variable.Value -is [int])) {
+                    $variable.Error = "The item count should be between 1 and 100."
+                }
+            }
+        }
+    )
+}
+
+if($dataTypeName -eq "Item") {
+    $props.Parameters += @{
+            Name="itemNamePrefix"; Value=$defaultItemNamePrefix; Placeholder="Enter item name prefix";
+            Title="What should be the $($dataTypeName) name prefix?";  Columns=6; 
+            Validator = {
+                if([string]::IsNullOrEmpty($variable.Value) -or ![Sitecore.Data.Items.ItemUtil]::IsItemNameValid($variable.Value)) {
+                    $variable.Error = "The item name prefix '$($variable.Value)' is invalid."
+                }
+            }
+    }
+    $props.Parameters += @{
+            Name="selectedrootItem"; Value=$defaultRootItem; 
+            Title = "Where should the Items be generated?"; 
+            root="/sitecore/content/"; Editor="Droptree"; 
+            Validator = {
+                if([string]::IsNullOrEmpty($variable.Value)) {
+                    $variable.Error = "The item root is missing."
+                }
+            }
+        }
+    $props.Parameters += @{
+            Name="selectedItemTemplate"; Value=$defaultItemTemplate; 
+            Title = "Which Data Template should be used?"; 
+            root="/sitecore/templates/"; Editor="Droptree";
+            Validator = {
+                if([string]::IsNullOrEmpty($variable.Value)) {
+                    $variable.Error = "The item template is missing."
+                }
+            }
+    }
+    $props.Parameters += @{
+            Name="shouldRandomizeTree"; Value=$false; 
+            Title = "Random tree structure";
+            Tooltip = "Enable to create a random tree structure of items. Default behavior is a flat tree.";
+    }    
+} elseif($dataTypeName -eq "User") {
+    $props.Parameters += @{Name="defaultPassword"; Value=""; Title = "Default Password"; Columns=6; Placeholder="Password (optional)"; }
+    $props.Parameters += @{Name="selectedDomain"; Value=$defaultDomain; Options=$domainList; Title = "Which domain should be used when generating Users?"; Columns=9; }
+    $props.Parameters += @{Name="enableUsers"; Value=$false; Title = "Enable Users"; Columns=3; }
+}
+
+$result = Read-Variable @props
+
+if($result -ne "ok") {
+    Close-Window
+    exit
+}
+
+if($dataTypeName -eq "Item") {
+    $childCount = $selectedrootItem.Children.Count + 1
+    $createdItems = [System.Collections.ArrayList]@()
+    $totalItemCount = $childCount + $inputCount
+    for($index = $childCount; $index -lt $totalItemCount; $index++) {
+        $createdItem = $null
+        if(!$shouldRandomizeTree -or $index -lt 10 -or $index % 50 -eq 0) {
+            $createdItem = New-Item -Path $selectedrootItem.ProviderPath -Name "$($itemNamePrefix)$($index)" -Type $selectedItemTemplate.Paths.Path
+            $createdItems.Add($createdItem) > $null
+        } else {
+            $randomIndex = Get-Random -Minimum 0 -Maximum ($createdItems.Count - 1)
+            $rootItemPath = $createdItems[$randomIndex].ProviderPath
+            $createdItem = New-Item -Path $rootItemPath -Name "$($itemNamePrefix)$($index)" -Type $selectedItemTemplate.Paths.Path
+            $createdItems.Add($createdItem) > $null
+        }
+        $createdItem
+        Write-Progress -Status "Creating new items" -Activity "Created $($createdItem.ProviderPath)" -PercentComplete ($index/$totalItemCount*100)
+    }
+    
+    Write-Progress -Completed -Activity "Finished creating items."
+} elseif($dataTypeName -eq "User") {
+    $firstNames = "Michael Rebecca Adam Jason Martha Alan David Khris Robert Chris Steven Peter Matthew Mark Luke John Thomas Sarah Lisa Martha" -split " "
+    $lastNames = "West Smith Johnson Williams Brown Jones Martinez Thompson White Wilson Harrison Lee Beckham" -split " "
+    
+    for($index = 0; $index -lt $inputCount; $index++) {
+        $first = $firstNames[(Get-Random -Maximum $firstNames.Count)]
+        $middle = [char](65 + (Get-Random -Maximum 26))
+        $last = $lastNames[(Get-Random -Maximum $lastNames.Count)]
+        $randomId = Get-Random -Maximum 9999 -Minimum 1000
+        $userId = "$($first[0])$($middle)$($last)$($randomId)".ToLower()
+        $commandProperties = @{
+            "Identity" = "$($selectedDomain)\$($userId)"
+            "FullName" = "$($first) $($middle) $($last)"
+            "Email" = "$($userId)@testdomain.com"
+        }
+        
+        if($enableUsers) {
+            $commandProperties["Enabled"] = $enableUsers
+            $commandProperties["Password"] = @{$true=[System.Web.Security.Membership]::GeneratePassword(10,3);$false=$defaultPassword}[[string]::IsNullOrEmpty($defaultPassword)] 
+        }
+        New-User @commandProperties
+    }    
+}
+
+Show-Result -Text
+Close-Window

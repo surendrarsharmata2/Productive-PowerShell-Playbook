@@ -1,0 +1,82 @@
+﻿<#
+    .SYNOPSIS
+        Lists the items with items in a workflow for several days.
+        
+    .NOTES
+        Michael West
+        Adapted from the Advanced System Reporter module.
+#>
+
+filter HasStaleWorkflow {
+    param(
+        [ValidateNotNull()]
+        [Parameter(Mandatory=$true,ValueFromPipeline=$true)]
+        [Sitecore.Data.Items.Item]$Item,
+        [int]$Age=14
+    )
+    
+    $wf = [Sitecore.Context]::Workflow.GetWorkflow($item)
+    if ($wf) {
+        $state = $wf.GetState($item)
+        if ($state -ne $null -and !$state.FinalState) {
+            $wevents = $wf.GetHistory($item);
+            if ($wevents -ne $null -and $wevents.Length -gt 0) {
+                $difference = ([datetime]::Now - $wevents[$wevents.Length - 1].Date).Days
+                Write-Log $difference
+                if($difference -gt $age) {
+                    $Item | Add-Member -MemberType NoteProperty -Name Age -Value $difference
+                    $Item
+                }
+            }
+        }
+    }
+}
+
+$root = Get-Item -Path "master:\sitecore\content"
+
+$settings = @{
+    Title = "Report Filter"
+    OkButtonName = "Proceed"
+    CancelButtonName = "Abort"
+    Description = "Filter the results for items using the specified tree path."
+    Parameters = @{ 
+        Variable = (Get-Variable "root")
+        Title = "Search Path"
+        Tooltip = "Search for items in a stale workflow state starting here"
+    }, @{
+        Name = "age"
+        Options = "1|1|7|7|14|14|30|30|60|60"
+        Title = "Age"
+        Tooltip = "Number of days old the items have been in the workflow state"
+    }
+    Icon = [regex]::Replace($PSScript.Appearance.Icon, "Office", "OfficeWhite", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    ShowHints = $true
+}
+
+$result = Read-Variable @settings
+if($result -ne "ok") {
+    Exit
+}
+
+$items = @($root) + @(($root.Axes.GetDescendants())) | HasStaleWorkflow -Age $age | Initialize-Item
+
+if($items.Count -eq 0){
+    Show-Alert "There are no items found which have a stale workflow."
+} else {
+    $props = @{
+        Title = "Item Workflow Report"
+        InfoTitle = "Items with a stale workflow"
+        InfoDescription = "Lists the items with items in a workflow for several days."
+        PageSize = 25
+    }
+    
+    $items |
+        Show-ListView @props -Property @{Label="Name"; Expression={$_.DisplayName} },
+            @{Label="Updated"; Expression={$_.__Updated} },
+            @{Label="Updated by"; Expression={$_."__Updated by"} },
+            @{Label="Created"; Expression={$_.__Created} },
+            @{Label="Created by"; Expression={$_."__Created by"} },
+            @{Label="Path"; Expression={$_.ItemPath} },
+            @{Label="Age"; Expression={$_.Age} }
+}
+Close-Window

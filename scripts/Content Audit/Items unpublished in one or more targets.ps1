@@ -1,0 +1,116 @@
+﻿<#
+	.SYNOPSIS
+		Generates a report for all items unpublished in one or more targets.
+		
+	.NOTES
+		Michael West
+		20151015
+#>
+
+$publishingTargetsFolderId = New-Object Sitecore.Data.ID "{D9E44555-02A6-407A-B4FC-96B9026CAADD}"
+$targetDatabaseFieldId = [Sitecore.FieldIDs]::PublishingTargetDatabase
+
+# Find the publishing targets item folder
+$publishingTargetsFolder = [Sitecore.Context]::ContentDatabase.GetItem($publishingTargetsFolderId)
+if ($publishingTargetsFolder -eq $null) {
+    Show-Alert "There was a problem locating the publishing targets folder."
+    return
+}
+
+$targets = @()
+
+# Retrieve the publishing targets database names
+# Check for item existance in publishing targets
+foreach($publishingTargetDatabase in $publishingTargetsFolder.GetChildren()) {
+    $targets += [Sitecore.Data.Database]::GetDatabase($publishingTargetDatabase[$targetDatabaseFieldId])
+}
+
+filter Filter-UnpublishedItem {
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [item]$Item,
+        
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [Sitecore.Data.Database[]]$TargetDatabase
+    )
+    
+    if(!$Item.Publishing.IsPublishable([datetime]::Now, $false)) {
+        return
+    }
+     
+    $existsInAll = $true
+    $existsInOne = $false
+     
+    # Retrieve the publishing targets database names
+    # Check for item existance in publishing targets
+    foreach($target in $TargetDatabase) {
+        if($target.GetItem($item.ID)) {
+            $existsInOne = $true
+        } else {
+            $existsInAll = $false
+        }
+    }
+    
+    # Better performance and readability if we don't show any flag if there is nothing to be concerned about.
+    if ($existsInAll) {
+        return
+    }
+     
+    # Return descriptor with tooltip and icon
+    if ($existsInOne) {
+        Write-Verbose "Exists in one : $($item.Name)"
+    } else {
+        Write-Verbose "Exists in none : $($item.Name)"
+    }
+    
+    $item
+}
+
+$database = "master"
+$root = Get-Item -Path (@{$true="$($database):\content\home"; $false="$($database):\content"}[(Test-Path -Path "$($database):\content\home")])
+$props = @{
+    Parameters = @(
+        @{Name="root"; Title="Choose the report root"; Tooltip="Only items in this branch will be returned.";}
+    )
+    Title = "Report Filter"
+    Description = "Choose the criteria for the report."
+    Width = 550
+    Height = 300
+    ShowHints = $true
+    Icon = [regex]::Replace($PSScript.Appearance.Icon, "Office", "OfficeWhite", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+
+$result = Read-Variable @props
+
+if($result -eq "cancel"){
+    exit
+}
+
+$watch = [System.Diagnostics.Stopwatch]::StartNew()
+$items = @($root) + @(($root.Axes.GetDescendants())) | 
+    Filter-UnpublishedItem -TargetDatabase $targets |
+    Initialize-Item |
+    Sort-Object -Property Name
+$watch.Stop()
+Write-Verbose "$($items.Count) items found in $($watch.ElapsedMilliseconds) ms"
+
+if($items.Count -eq 0){
+    Show-Alert "There are no items found which have broken links in the current language."
+} else {
+    $props = @{
+        Title = "Unpublished Items Report"
+        InfoTitle = "Unpublished items in one or more targets"
+        InfoDescription = "Lists the items which have not yet published to all targets."
+        PageSize = 25
+    }
+    
+    $items |
+        Show-ListView @props -Property @{Label="Name"; Expression={$_.DisplayName} },
+            @{Label="Updated"; Expression={[Sitecore.DateUtil]::IsoDateToDateTime($_["__Updated"])} },
+            @{Label="Updated by"; Expression={$_["__Updated by"]} },
+            @{Label="Created"; Expression={[Sitecore.DateUtil]::IsoDateToDateTime($_["__Created"])} },
+            @{Label="Created by"; Expression={$_["__Created by"]} },
+            @{Label="Path"; Expression={$_.Paths.Path} },
+            @{Label="Version"; Expression={$_.Version}}
+}
+Close-Window
